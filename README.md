@@ -1,0 +1,2 @@
+# NatsTehOlimpPlotina
+gigi za shagi
