@@ -1,0 +1,563 @@
+import socket
+import threading
+import json
+import time
+import sqlite3
+import csv
+from datetime import datetime
+import os
+
+# Порты для подключения
+YOTIK_PORT = 8888  # ЙОТИК (бункерные данные)
+ARDUINO_PORT = 8887  # Arduino Mega (датчики)
+PULT_PORT = 8889  # Пульт управления
+
+# Глобальные состояния подключений и данных
+yotik_conn = None
+arduino_conn = None
+pult_conn = None
+last_yotik_data = None  # Последние данные от ЙОТИК (сохраняем оригинальные ключи!)
+last_arduino_data = None  # Последние данные от Arduino (сохраняем оригинальные ключи!)
+lock = threading.Lock()
+
+# Пути к файлам логов
+DB_PATH = "bunker_data.db"
+CSV_LOG = "bunker_log.csv"
+
+
+def init_database():
+    """Инициализация SQLite базы данных"""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+
+    # Таблица для объединённых данных (всё в одной таблице для простоты анализа)
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS combined_readings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp_server REAL NOT NULL,          -- Время получения на сервере
+            timestamp_device INTEGER,                -- Время с устройства (мс)
+            bunker_number INTEGER,
+            radiation_in TEXT,
+            radiation_out TEXT,
+            bunker_temperature TEXT,                 -- Температура от ЙОТИК
+            pof_status TEXT,
+            people_count INTEGER,
+            stocks_count INTEGER,
+            door_position INTEGER,
+            potentiometer FLOAT,
+            arduino_temperature TEXT,                -- Температура от Arduino
+            humidity TEXT,
+            geiger_count INTEGER,
+            motor_status TEXT,
+            source_device TEXT NOT NULL,             -- "yotik" или "arduino"
+            raw_data TEXT NOT NULL,
+            received_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+
+    # Таблица команд для аудита
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS command_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            command TEXT NOT NULL,
+            source TEXT NOT NULL,
+            target_device TEXT NOT NULL,
+            status TEXT NOT NULL,
+            response TEXT,
+            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+
+    conn.commit()
+    conn.close()
+    print(f"[✓] База данных инициализирована: {DB_PATH}")
+
+
+def init_csv_log():
+    """Создание CSV файла с заголовками"""
+    if not os.path.exists(CSV_LOG):
+        with open(CSV_LOG, 'w', newline='', encoding='utf-8') as f:
+            writer = csv.writer(f)
+            writer.writerow([
+                'received_at', 'timestamp_server', 'timestamp_device', 'source',
+                'bunker_number', 'radiation_in', 'radiation_out', 'bunker_temperature',
+                'pof_status', 'people_count', 'stocks_count', 'door_position',
+                'potentiometer', 'arduino_temperature', 'humidity', 'geiger_count',
+                'motor_status', 'raw_data'
+            ])
+        print(f"[✓] CSV лог создан: {CSV_LOG}")
+
+
+def save_combined_data(source: str, data_dict: dict, raw_json: str):
+    """Сохранение данных в единую таблицу с автоматическим маппингом полей"""
+    try:
+        timestamp_server = time.time()
+        timestamp_device = data_dict.get('timestamp', int(timestamp_server * 1000))
+
+        # Маппинг полей из оригинальных названий (сохраняем регистр и названия!)
+        bunker_number = data_dict.get('BunkerNumber', data_dict.get('bunker_number', None))
+        radiation_in = data_dict.get('RadiationLevelIn', data_dict.get('radiation_in', None))
+        radiation_out = data_dict.get('RadiationLevelOut', data_dict.get('radiation_out', None))
+        bunker_temp = data_dict.get('temperature', None)  # Температура от ЙОТИК
+        pof_status = data_dict.get('POF', data_dict.get('pof_status', None))
+        people_count = data_dict.get('PeopleCounter', data_dict.get('people_count', None))
+        stocks_count = data_dict.get('NumberOfStocks', data_dict.get('stocks_count', None))
+        door_position = data_dict.get('DoorPosition', data_dict.get('door_position', None))
+
+        # Поля от Arduino (сохраняем оригинальные названия!)
+        potentiometer = data_dict.get('potentiometer', None)
+        arduino_temp = data_dict.get('temperature',
+                                     None)  # Температура от Arduino (может конфликтовать с ЙОТИК - поэтому разные поля)
+        humidity = data_dict.get('humidity', None)
+        geiger_count = data_dict.get('geiger_count', data_dict.get('GeigerCount', None))
+        motor_status = data_dict.get('motor_status', data_dict.get('MotorStatus', None))
+
+        received_at = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+
+        # Сохранение в SQLite
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute('''
+            INSERT INTO combined_readings 
+            (timestamp_server, timestamp_device, bunker_number, radiation_in, radiation_out,
+             bunker_temperature, pof_status, people_count, stocks_count, door_position,
+             potentiometer, arduino_temperature, humidity, geiger_count, motor_status,
+             source_device, raw_data)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            timestamp_server, timestamp_device, bunker_number, radiation_in, radiation_out,
+            bunker_temp, pof_status, people_count, stocks_count, door_position,
+            potentiometer, arduino_temp, humidity, geiger_count, motor_status,
+            source, raw_json
+        ))
+        conn.commit()
+        conn.close()
+
+        # Сохранение в CSV
+        with open(CSV_LOG, 'a', newline='', encoding='utf-8') as f:
+            writer = csv.writer(f)
+            writer.writerow([
+                received_at, timestamp_server, timestamp_device, source,
+                bunker_number, radiation_in, radiation_out, bunker_temp,
+                pof_status, people_count, stocks_count, door_position,
+                potentiometer, arduino_temp, humidity, geiger_count,
+                motor_status, raw_json[:250]  # Обрезаем для читаемости CSV
+            ])
+
+        print(f"[💾] {source.upper()} данные сохранены: {len(raw_json)} байт")
+        return True
+
+    except Exception as e:
+        print(f"[!] Ошибка сохранения {source} данных: {e}")
+        return False
+
+
+def log_command(command: str, source: str, target_device: str, status: str, response: str = ""):
+    """Логирование команд для аудита"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute('''
+            INSERT INTO command_log (command, source, target_device, status, response)
+            VALUES (?, ?, ?, ?, ?)
+        ''', (command, source, target_device, status, response))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"[!] Ошибка логирования команды: {e}")
+
+
+def send_to_pult(message: dict):
+    """Безопасная отправка JSON-сообщения на пульт"""
+    global pult_conn
+    if not pult_conn:
+        return
+
+    try:
+        json_msg = json.dumps(message, ensure_ascii=False) + "\n"
+        pult_conn.sendall(json_msg.encode('utf-8'))
+        # Краткий лог в консоль (без дублирования полного JSON)
+        if message.get("type") == "full_state":
+            print(f"[→ ПУЛЬТ] Полное состояние ({len(json_msg)} байт)")
+        else:
+            print(f"[→ ПУЛЬТ] {message.get('type', 'unknown')}")
+    except Exception as e:
+        print(f"[!] Ошибка отправки на пульт: {e}")
+        with lock:
+            try:
+                pult_conn.close()
+            except:
+                pass
+            pult_conn = None
+
+
+def parse_device_message(raw_msg: str):
+    """Универсальный парсер с сохранением оригинальных названий полей"""
+    raw_msg = raw_msg.strip()
+
+    # Попытка распарсить как чистый JSON (сохраняем оригинальные ключи!)
+    if raw_msg.startswith('{') and raw_msg.endswith('}'):
+        try:
+            data = json.loads(raw_msg)
+            return "json", data
+        except json.JSONDecodeError:
+            pass
+
+    # Попытка распарсить как key=value (сохраняем оригинальные ключи!)
+    if "=" in raw_msg:
+        try:
+            parts = {}
+            for item in raw_msg.split("&"):
+                if "=" in item:
+                    k, v = item.split("=", 1)
+                    parts[k.strip()] = v.strip()
+            return "kv", parts
+        except Exception:
+            pass
+
+    return "raw", raw_msg
+
+
+def get_full_state():
+    """Формирование ПОЛНОГО объединённого JSON со всеми данными"""
+    with lock:
+        state = {
+            "type": "full_state",
+            "timestamp": time.time(),
+            "status": {
+                "yotik_connected": yotik_conn is not None,
+                "arduino_connected": arduino_conn is not None,
+                "server_uptime": time.time() - server_start_time
+            }
+        }
+
+        # Добавляем данные от ЙОТИК с ОРИГИНАЛЬНЫМИ названиями полей!
+        if last_yotik_data is not None:
+            state["yotik"] = last_yotik_data.copy()  # Копируем чтобы избежать гонки
+
+        # Добавляем данные от Arduino с ОРИГИНАЛЬНЫМИ названиями полей!
+        if last_arduino_data is not None:
+            state["arduino"] = last_arduino_data.copy()
+
+        return state
+
+
+def handle_yotik(conn, addr):
+    global yotik_conn, last_yotik_data
+    with lock:
+        yotik_conn = conn
+    print(f"\n[✓] ЙОТИК подключён: {addr[0]}:{addr[1]}")
+    send_to_pult({"event": "yotik_connected", "ip": addr[0]})
+
+    try:
+        while True:
+            data = conn.recv(4096)
+            if not data:
+                break
+
+            raw_msg = data.decode('utf-8', errors='ignore').strip()
+            if not raw_msg:
+                continue
+
+            print(f"[← ЙОТИК] {raw_msg[:80]}...")
+
+            # Обработка команд (подтверждения)
+            if raw_msg in ("1", "2", "3", "4", "5"):
+                send_to_pult({
+                    "type": "command_confirmation",
+                    "command": raw_msg,
+                    "device": "yotik",
+                    "timestamp": time.time()
+                })
+                log_command(raw_msg, "yotik", "yotik", "confirmed", raw_msg)
+                continue
+
+            # Парсинг данных с сохранением оригинальных названий полей
+            msg_type, parsed_data = parse_device_message(raw_msg)
+
+            if msg_type in ("json", "kv"):
+                # Сохраняем данные с оригинальными ключами
+                with lock:
+                    last_yotik_data = parsed_data.copy()
+
+                # Сохраняем в БД
+                save_combined_data("yotik", parsed_data, raw_msg)
+
+                # Отправляем ПОЛНЫЙ объединённый JSON на пульт
+                full_state = get_full_state()
+                send_to_pult(full_state)
+
+                # Отправляем ответ ЙОТИК
+                try:
+                    conn.sendall(b"cmd=ok&status=received\n")
+                except:
+                    break
+            else:
+                print(f"[!] Неизвестный формат от ЙОТИК: {raw_msg[:50]}")
+
+    except Exception as e:
+        print(f"[!] Ошибка ЙОТИК: {e}")
+    finally:
+        with lock:
+            yotik_conn = None
+        conn.close()
+        print(f"\n[✗] ЙОТИК отключён: {addr[0]}")
+        send_to_pult({"event": "yotik_disconnected", "ip": addr[0]})
+
+
+def handle_arduino(conn, addr):
+    global arduino_conn, last_arduino_data
+    with lock:
+        arduino_conn = conn
+    print(f"\n[✓] Arduino подключён: {addr[0]}:{addr[1]}")
+    send_to_pult({"event": "arduino_connected", "ip": addr[0]})
+
+    try:
+        while True:
+            data = conn.recv(4096)
+            if not data:
+                break
+
+            raw_msg = data.decode('utf-8', errors='ignore').strip()
+            if not raw_msg:
+                continue
+
+            print(f"[← ARDUINO] {raw_msg[:80]}...")
+
+            # Обработка команд (подтверждения)
+            if raw_msg in ("1", "2", "3", "4", "5"):
+                send_to_pult({
+                    "type": "command_confirmation",
+                    "command": raw_msg,
+                    "device": "arduino",
+                    "timestamp": time.time()
+                })
+                log_command(raw_msg, "arduino", "arduino", "confirmed", raw_msg)
+                continue
+
+            # Парсинг данных с сохранением оригинальных названий полей
+            msg_type, parsed_data = parse_device_message(raw_msg)
+
+            if msg_type in ("json", "kv"):
+                # Сохраняем данные с оригинальными ключами
+                with lock:
+                    last_arduino_data = parsed_data.copy()
+
+                # Сохраняем в БД
+                save_combined_data("arduino", parsed_data, raw_msg)
+
+                # Отправляем ПОЛНЫЙ объединённый JSON на пульт
+                full_state = get_full_state()
+                send_to_pult(full_state)
+
+                # Отправляем ответ Arduino
+                try:
+                    conn.sendall(b"cmd=ok&status=received\n")
+                except:
+                    break
+            else:
+                print(f"[!] Неизвестный формат от Arduino: {raw_msg[:50]}")
+
+    except Exception as e:
+        print(f"[!] Ошибка Arduino: {e}")
+    finally:
+        with lock:
+            arduino_conn = None
+        conn.close()
+        print(f"\n[✗] Arduino отключён: {addr[0]}")
+        send_to_pult({"event": "arduino_disconnected", "ip": addr[0]})
+
+
+def handle_pult(conn, addr):
+    global pult_conn
+    with lock:
+        pult_conn = conn
+    print(f"\n[✓] ПУЛЬТ подключён: {addr[0]}:{addr[1]}")
+
+    # Отправляем текущее полное состояние при подключении
+    full_state = get_full_state()
+    send_to_pult(full_state)
+
+    try:
+        while True:
+            data = conn.recv(1024)
+            if not data:
+                break
+
+            cmd = data.decode('utf-8').strip()
+            print(f"[← ПУЛЬТ] Команда: '{cmd}'")
+
+            # Команды для ЙОТИК (1-5)
+            if cmd in ("1", "2", "3", "4", "5"):
+                if yotik_conn:
+                    try:
+                        yotik_conn.sendall((cmd + "\n").encode('utf-8'))
+                        print(f"[→ ЙОТИК] Отправлена команда: {cmd}")
+                        send_to_pult({
+                            "type": "command_sent",
+                            "command": cmd,
+                            "device": "yotik",
+                            "status": "delivered"
+                        })
+                        log_command(cmd, "pult", "yotik", "delivered")
+                    except Exception as e:
+                        send_to_pult({
+                            "type": "command_error",
+                            "command": cmd,
+                            "device": "yotik",
+                            "error": f"ЙОТИК недоступен: {str(e)}"
+                        })
+                        log_command(cmd, "pult", "yotik", "failed", str(e))
+                else:
+                    send_to_pult({
+                        "type": "command_error",
+                        "command": cmd,
+                        "device": "yotik",
+                        "error": "ЙОТИК не подключён"
+                    })
+                    log_command(cmd, "pult", "yotik", "failed", "disconnected")
+
+            # Команды для Arduino (a1-a5)
+            elif cmd in ("a1"):
+                arduino_cmd = cmd[1:]  # Убираем префикс 'a'
+                if arduino_conn:
+                    try:
+                        arduino_conn.sendall((arduino_cmd + "\n").encode('utf-8'))
+                        print(f"[→ ARDUINO] Отправлена команда: {arduino_cmd}")
+                        send_to_pult({
+                            "type": "command_sent",
+                            "command": arduino_cmd,
+                            "device": "arduino",
+                            "status": "delivered"
+                        })
+                        log_command(arduino_cmd, "pult", "arduino", "delivered")
+                    except Exception as e:
+                        send_to_pult({
+                            "type": "command_error",
+                            "command": arduino_cmd,
+                            "device": "arduino",
+                            "error": f"Arduino недоступен: {str(e)}"
+                        })
+                        log_command(arduino_cmd, "pult", "arduino", "failed", str(e))
+                else:
+                    send_to_pult({
+                        "type": "command_error",
+                        "command": arduino_cmd,
+                        "device": "arduino",
+                        "error": "Arduino не подключён"
+                    })
+                    log_command(arduino_cmd, "pult", "arduino", "failed", "disconnected")
+
+            else:
+                send_to_pult({
+                    "type": "invalid_command",
+                    "received": cmd,
+                    "valid_commands": ["1-5 (ЙОТИК)", "a1-a5 (Arduino)"]
+                })
+    except Exception as e:
+        print(f"[!] Ошибка пульта: {e}")
+    finally:
+        with lock:
+            pult_conn = None
+        conn.close()
+        print(f"\n[✗] ПУЛЬТ отключён: {addr[0]}")
+
+
+def start_server(port, handler, name):
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        s.bind(('0.0.0.0', port))
+        s.listen(5)
+        print(f"[СЕРВЕР] {name} слушает порт {port}")
+        while True:
+            conn, addr = s.accept()
+            threading.Thread(target=handler, args=(conn, addr), daemon=True).start()
+
+
+def show_stats():
+    """Показать статистику по сохранённым данным"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+
+        cursor.execute(
+            "SELECT COUNT(*), COUNT(CASE WHEN source_device='yotik' THEN 1 END), COUNT(CASE WHEN source_device='arduino' THEN 1 END) FROM combined_readings")
+        total, yotik_count, arduino_count = cursor.fetchone()
+
+        cursor.execute("SELECT COUNT(*), COUNT(CASE WHEN status='delivered' THEN 1 END) FROM command_log")
+        cmd_total, cmd_ok = cursor.fetchone()
+
+        conn.close()
+
+        print("\n" + "=" * 60)
+        print("📊 СТАТИСТИКА СЕРВЕРА")
+        print("=" * 60)
+        print(f"💾 Всего записей: {total}")
+        print(f"   ├─ ЙОТИК: {yotik_count}")
+        print(f"   └─ Arduino: {arduino_count}")
+        print(f"🕹️  Отправлено команд: {cmd_total} (успешно: {cmd_ok})")
+        print(f"📁 База данных: {os.path.abspath(DB_PATH)}")
+        print(f"📄 CSV лог: {os.path.abspath(CSV_LOG)}")
+        print("=" * 60 + "\n")
+
+    except Exception as e:
+        print(f"[!] Ошибка получения статистики: {e}")
+
+
+# Глобальная переменная для времени запуска сервера
+server_start_time = time.time()
+
+if __name__ == "__main__":
+    print("=" * 60)
+    print("🚀 СЕРВЕР УПРАВЛЕНИЯ: ЕДИНЫЙ JSON ДЛЯ ПУЛЬТА")
+    print("=" * 60)
+    print("Последовательность запуска:")
+    print("1. Этот сервер (уже запущен)")
+    print("2. ЙОТИК → порт 8888 (бункерные данные)")
+    print("3. Arduino Mega → порт 8890 (датчики)")
+    print("4. ПУЛЬТ → порт 8889")
+    print("=" * 60)
+    print("\n💡 ВАЖНО: Пульт получает ЕДИНЫЙ JSON со ВСЕМИ данными!")
+    print("   Структура ответа:")
+    print("   {")
+    print('     "type": "full_state",')
+    print('     "timestamp": 123456789.123,')
+    print('     "status": { ... },')
+    print('     "yotik": { "BunkerNumber":1, "RadiationLevelIn":"...", ... },')
+    print('     "arduino": { "potentiometer":512, "geiger_count":123, ... }')
+    print("   }")
+    print("=" * 60)
+
+    # Инициализация системы логирования
+    init_database()
+    init_csv_log()
+    show_stats()
+
+    # Запуск серверов
+    threading.Thread(target=start_server, args=(YOTIK_PORT, handle_yotik, "ЙОТИК"), daemon=True).start()
+    threading.Thread(target=start_server, args=(ARDUINO_PORT, handle_arduino, "ARDUINO"), daemon=True).start()
+    threading.Thread(target=start_server, args=(PULT_PORT, handle_pult, "ПУЛЬТ"), daemon=True).start()
+
+    # Консольный интерфейс
+    print("\nДоступные команды:")
+    print("  stats  - статистика данных")
+    print("  exit   - остановить сервер\n")
+
+    try:
+        while True:
+            try:
+                cmd = input("\n").strip().lower()
+                if cmd == "exit":
+                    print("\n[!] Остановка сервера...")
+                    break
+                elif cmd == "stats":
+                    show_stats()
+                else:
+                    print("Неизвестная команда. Доступно: 'stats', 'exit'")
+            except (EOFError, KeyboardInterrupt):
+                print("\n[!] Прерывание пользователем")
+                break
+    except KeyboardInterrupt:
+        print("\n[!] Сервер остановлен пользователем")
+
+    print("Сервер завершил работу.")

@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ПУЛЬТ УПРАВЛЕНИЯ БУНКЕРОМ</title>
+    <style>
+        :root {
+            --primary: #3a3a3a;
+            --secondary: #4a4a4a;
+            --success: #4a6e4a;
+            --warning: #7a6a4a;
+            --danger: #6e4a4a;
+            --dark: #1a1a1a;
+            --light: #d0d0d0;
+            --gray: #7a7a7a;
+            --border-radius: 4px;
+            --transition: all 0.15s ease;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Courier New', monospace;
+            background: #121212;
+            color: #c0c0c0;
+            min-height: 100vh;
+            padding: 15px;
+        }
+
+        .container {
+            max-width: 1000px;
+            margin: 0 auto;
+        }
+
+        header {
+            text-align: center;
+            margin-bottom: 25px;
+            padding: 15px;
+            background: #252525;
+            border-radius: var(--border-radius);
+            box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
+            border: 1px solid #353535;
+        }
+
+        h1 {
+            font-size: 1.8rem;
+            margin-bottom: 8px;
+            font-weight: bold;
+            letter-spacing: 1px;
+            text-transform: uppercase;
+            color: #d0d0d0;
+        }
+
+        .status-badge {
+            display: inline-block;
+            padding: 6px 15px;
+            border-radius: var(--border-radius);
+            font-weight: bold;
+            margin-top: 8px;
+            font-size: 0.9rem;
+            border: 1px solid transparent;
+            font-family: 'Courier New', monospace;
+        }
+
+        .status-connected {
+            background: #3a5a3a;
+            color: #c0c0c0;
+            border-color: #4a7a4a;
+        }
+
+        .status-disconnected {
+            background: #5a3a3a;
+            color: #c0c0c0;
+            border-color: #7a4a4a;
+        }
+
+        .control-panel {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+            gap: 15px;
+            margin-bottom: 25px;
+        }
+
+        .button {
+            padding: 18px 12px;
+            border: 1px solid #4a4a4a;
+            border-radius: var(--border-radius);
+            font-size: 0.95rem;
+            font-weight: bold;
+            cursor: pointer;
+            transition: var(--transition);
+            background: #3a3a3a;
+            color: #c0c0c0;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            font-family: 'Courier New', monospace;
+        }
+
+        .button:hover {
+            background: #303030;
+            border-color: #505050;
+        }
+
+        .button:active {
+            background: #282828;
+        }
+
+        .btn-light { background: #3a5a3a; border-color: #4a6a4a; }
+        .btn-light:hover { background: #304a30; border-color: #405a40; }
+
+        .btn-fire { background: #5a3a3a; border-color: #6a4a4a; }
+        .btn-fire:hover { background: #4a3030; border-color: #5a4040; }
+
+        .btn-sound { background: #3a4a5a; border-color: #4a5a6a; }
+        .btn-sound:hover { background: #304050; border-color: #405060; }
+
+        .btn-reset { background: #4a3a5a; border-color: #5a4a6a; }
+        .btn-reset:hover { background: #403050; border-color: #504060; }
+
+        .btn-entr { background: #5a5a3a; border-color: #6a6a4a; }
+        .btn-entr:hover { background: #505030; border-color: #606040; }
+
+        .log-container {
+            background: #202020;
+            border-radius: var(--border-radius);
+            padding: 15px;
+            height: 380px;
+            overflow-y: auto;
+            box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
+            border: 1px solid #303030;
+            font-family: 'Courier New', monospace;
+        }
+
+        .log-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 12px;
+            padding-bottom: 8px;
+            border-bottom: 1px solid #303030;
+        }
+
+        .log-title {
+            font-size: 1.1rem;
+            font-weight: bold;
+            letter-spacing: 1px;
+            color: #a0a0a0;
+        }
+
+        .log-clear {
+            background: #303030;
+            border: 1px solid #404040;
+            color: #c0c0c0;
+            padding: 5px 10px;
+            border-radius: var(--border-radius);
+            cursor: pointer;
+            transition: var(--transition);
+            font-size: 0.85rem;
+            font-weight: bold;
+            font-family: 'Courier New', monospace;
+        }
+
+        .log-clear:hover {
+            background: #282828;
+            border-color: #505050;
+        }
+
+        .log-entry {
+            padding: 8px 10px;
+            margin-bottom: 6px;
+            border-radius: var(--border-radius);
+            font-family: 'Courier New', monospace;
+            font-size: 0.85rem;
+            border-left: 2px solid transparent;
+        }
+
+        .log-type-system { background: #282828; border-left-color: #4a6a8a; }
+        .log-type-success { background: #282828; border-left-color: #3a5a3a; }
+        .log-type-warning { background: #282828; border-left-color: #6a5a3a; color: #b0a060; }
+        .log-type-error { background: #3a2828; border-left-color: #6a4a4a; }
+        .log-type-command { background: #282828; border-left-color: #5a4a6a; color: #8a7a9a; }
+        .log-type-data { background: #282828; border-left-color: #4a6a8a; color: #6a8aba; }
+        .log-type-text { background: #282828; border-left-color: #6a6a6a; }
+
+        .timestamp {
+            color: #7a7a7a;
+            font-size: 0.8rem;
+            margin-right: 8px;
+            font-weight: bold;
+        }
+
+        @media (max-width: 768px) {
+            .control-panel {
+                grid-template-columns: 1fr 1fr;
+            }
+            h1 {
+                font-size: 1.6rem;
+            }
+            .log-container {
+                height: 300px;
+            }
+        }
+
+        @media (max-width: 480px) {
+            .control-panel {
+                grid-template-columns: 1fr;
+            }
+            .button {
+                padding: 15px 10px;
+                font-size: 0.9rem;
+            }
+            h1 {
+                font-size: 1.4rem;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>ПУЛЬТ УПРАВЛЕНИЯ БУНКЕРОМ</h1>
+            <div id="connection-status" class="status-badge status-disconnected">
+                ОТКЛЮЧЕНО ОТ СЕРВЕРА
+            </div>
+            <div id="yotik-ip" style="margin-top: 6px; font-size: 0.85rem; opacity: 0.7; font-family: 'Courier New', monospace;"></div>
+        </header>
+
+        <div class="control-panel">
+            <button class="button btn-light" onclick="sendCommand('1')">
+                ЗАКРЫТЬ БУНКЕР
+            </button>
+            <button class="button btn-fire" onclick="sendCommand('2')">
+                ОТКРЫТЬ БУНКЕР
+            </button>
+            <button class="button btn-sound" onclick="sendCommand('3')">
+                ВЕНТИЛЯЦИЯ ВКЛ
+            </button>
+            <button class="button btn-reset" onclick="sendCommand('4')">
+                ВЕНТИЛЯЦИЯ ВЫКЛ
+            </button>
+            <button class="button btn-entr" onclick="sendCommand('5')">
+                СБРОС КОЛ-ВА
+            </button>
+        </div>
+
+        <div class="log-container" id="log-container">
+            <div class="log-header">
+                <div class="log-title">ЛОГ ДАННЫХ</div>
+            </div>
+            <div id="log-entries"></div>
+        </div>
+    </div>
+
+    <script>
+        let lastMessageCount = 0;
+        let reconnectAttempts = 0;
+
+        setInterval(updateStatus, 2000);
+        updateStatus();
+
+        function updateStatus() {
+            fetch('/api/status')
+                .then(response => response.json())
+                .then(data => {
+                    const statusEl = document.getElementById('connection-status');
+                    const ipEl = document.getElementById('yotik-ip');
+
+                    if (data.connected) {
+                        statusEl.className = 'status-badge status-connected';
+                        statusEl.textContent = 'ПОДКЛЮЧЕНО К СЕРВЕРУ';
+                        reconnectAttempts = 0;
+                    } else {
+                        statusEl.className = 'status-badge status-disconnected';
+                        statusEl.textContent = 'ОТКЛЮЧЕНО ОТ СЕРВЕРА';
+                    }
+
+                    if (data.yotik_status.connected && data.yotik_status.ip) {
+                        ipEl.textContent = `БУНКЕР В СЕТИ: ${data.yotik_status.ip} (${data.yotik_status.last_seen})`;
+                        ipEl.style.color = '#6a8a6a';
+                    } else {
+                        ipEl.textContent = 'БУНКЕР НЕ В СЕТИ';
+                        ipEl.style.color = '#8a6a6a';
+                    }
+
+                    if (data.messages.length > lastMessageCount) {
+                        renderLog(data.messages);
+                        lastMessageCount = data.messages.length;
+
+                        const logContainer = document.getElementById('log-container');
+                        logContainer.scrollTop = logContainer.scrollHeight;
+                    }
+                })
+                .catch(error => {
+                    console.error('Ошибка обновления статуса:', error);
+                });
+        }
+
+        function renderLog(messages) {
+            const logEntries = document.getElementById('log-entries');
+            logEntries.innerHTML = messages.map(msg => `
+                <div class="log-entry log-type-${msg.type}">
+                    <span class="timestamp">[${msg.timestamp}]</span>
+                    <span>${msg.content}</span>
+                </div>
+            `).join('');
+        }
+
+        function sendCommand(cmd) {
+            fetch(`/api/send_command/${cmd}`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                }
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.status === 'error') {
+                    alert(`Ошибка: ${data.message}`);
+                }
+            })
+            .catch(error => {
+                alert(`Ошибка отправки команды: ${error}`);
+            });
+        }
+
+        function reconnect() {
+            fetch('/api/connect', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                }
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.status === 'success') {
+                    alert('ПОДКЛЮЧЕНИЕ ВОССТАНОВЛЕНО');
+                } else {
+                    reconnectAttempts++;
+                    if (reconnectAttempts > 3) {
+                        alert('НЕ УДАЁТСЯ ПОДКЛЮЧИТЬСЯ К СЕРВЕРУ');
+                        reconnectAttempts = 0;
+                    }
+                }
+            });
+        }
+
+        function clearLog() {
+            document.getElementById('log-entries').innerHTML = '';
+            lastMessageCount = 0;
+        }
+
+        document.addEventListener('keydown', (e) => {
+            if (e.key >= '1' && e.key <= '5') {
+                e.preventDefault();
+                sendCommand(e.key);
+            } else if (e.key === '0') {
+                e.preventDefault();
+                sendCommand('0');
+            } else if (e.key === 'r' || e.key === 'R') {
+                e.preventDefault();
+                reconnect();
+            }
+        });
+    </script>
+</body>
+</html>

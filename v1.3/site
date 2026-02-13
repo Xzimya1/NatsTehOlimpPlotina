@@ -1,0 +1,219 @@
+import socket
+import threading
+import json
+import sys
+import time
+from flask import Flask, render_template, jsonify, request
+from collections import deque
+from datetime import datetime
+
+# ====== КОНФИГУРАЦИЯ ======
+SERVER_IP = "10.164.135.55"  # IP сервера йотика
+SERVER_PORT = 8889
+FLASK_HOST = "0.0.0.0"
+FLASK_PORT = 5000
+
+
+# ====== ГЛОБАЛЬНОЕ СОСТОЯНИЕ ======
+class ControlPanel:
+    def __init__(self):
+        self.sock = None
+        self.connected = False
+        self.messages = deque(maxlen=50)  # Храним последние 50 сообщений
+        self.yotik_status = {"connected": False, "ip": None, "last_seen": None}
+        self.lock = threading.Lock()
+
+    def add_message(self, msg_type, content):
+        with self.lock:
+            self.messages.append({
+                "timestamp": datetime.now().strftime("%H:%M:%S"),
+                "type": msg_type,
+                "content": content
+            })
+
+    def get_messages(self):
+        with self.lock:
+            return list(self.messages)
+
+    def update_yotik_status(self, connected, ip=None):
+        with self.lock:
+            self.yotik_status["connected"] = connected
+            self.yotik_status["ip"] = ip
+            self.yotik_status["last_seen"] = datetime.now().strftime("%H:%M:%S")
+
+
+# Создаем экземпляр панели управления
+panel = ControlPanel()
+
+
+# ====== СОКЕТ-КЛИЕНТ ======
+def listen_server(sock):
+    """Поток приёма данных от сервера йотика"""
+    while panel.connected:
+        try:
+            data = sock.recv(4096)
+            if not data:
+                panel.add_message("system", "Сервер закрыл соединение")
+                panel.update_yotik_status(False)
+                break
+
+            # Обработка нескольких сообщений в одном пакете
+            for raw_msg in data.decode('utf-8').split('\n'):
+                if not raw_msg.strip():
+                    continue
+                try:
+                    msg = json.loads(raw_msg)
+                    data = json.dumps(msg, ensure_ascii=False)
+                    if "yotik" in data:
+                        panel.add_message("success", ", ".join([f"Людей вошло {data['yotik']['PeopleCounter']}", f"Температура {data['arduino']['temperature']}", f"Запасы {data['arduino']['potentiometer']}", f"Радиация {data["arduino"]["geiger_count"]}", f"Влажность {data["arduino"]["humidity"]}", f"Гермозатвор {'открыт' if data['yotik']['DoorPosition'] else 'закрыт'}"]))
+
+                    # Обработка системных событий
+                    if msg.get("event") == "yotik_disconnected":
+                        panel.add_message("warning", "⚠️ ЙОТИК отключён от сервера!")
+                        panel.update_yotik_status(False)
+                    elif msg.get("event") == "yotik_connected":
+                        ip = msg.get('ip', 'неизвестно')
+                        panel.add_message("success", f"✅ ЙОТИК подключён! IP: {ip}")
+                        panel.update_yotik_status(True, ip)
+                except json.JSONDecodeError:
+                    panel.add_message("text", raw_msg)
+        except ConnectionResetError:
+            panel.add_message("error", "Соединение с сервером разорвано")
+            panel.update_yotik_status(False)
+            break
+        except Exception as e:
+            if "Вот" not in str(e):
+                panel.add_message("error", f"Ошибка приёма: {e}")
+            break
+
+    panel.connected = False
+    panel.sock = None
+
+
+def connect_to_server():
+    """Подключение к серверу йотика"""
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.connect((SERVER_IP, SERVER_PORT))
+        panel.sock = sock
+        panel.connected = True
+        panel.add_message("system", f"✅ Подключено к серверу {SERVER_IP}:{SERVER_PORT}")
+        panel.update_yotik_status(True)
+
+        # Запуск потока прослушивания
+        threading.Thread(target=listen_server, args=(sock,), daemon=True).start()
+        return True
+    except ConnectionRefusedError:
+        panel.add_message("error", f"❌ Не удалось подключиться к {SERVER_IP}:{SERVER_PORT}")
+        panel.add_message("error", "Проверьте: 1) Запущен ли сервер 2) Правильный ли IP 3) Брандмауэр")
+        return False
+    except Exception as e:
+        panel.add_message("error", f"❌ Ошибка подключения: {e}")
+        return False
+
+
+def send_command_to_yotik(cmd):
+    """Отправка команды на сервер йотика"""
+    if not panel.connected or panel.sock is None:
+        return {"status": "error", "message": "Нет подключения к серверу йотика"}
+
+    try:
+        panel.sock.sendall(cmd.encode('utf-8'))
+        panel.add_message("command", f"📤 Отправлена команда: {cmd}")
+        return {"status": "success", "message": f"Команда '{cmd}' отправлена"}
+    except Exception as e:
+        panel.add_message("error", f"Ошибка отправки: {e}")
+        panel.connected = False
+        return {"status": "error", "message": f"Ошибка отправки: {e}"}
+
+
+# ====== FLASK ВЕБ-СЕРВЕР ======
+app = Flask(__name__)
+
+
+@app.route('/')
+def index():
+    return render_template('index.html')
+
+
+@app.route('/api/status')
+def get_status():
+    """Получение текущего статуса системы"""
+    return jsonify({
+        "connected": panel.connected,
+        "yotik_status": panel.yotik_status,
+        "messages": panel.get_messages()
+    })
+
+
+@app.route('/api/send_command/<cmd>', methods=['POST'])
+def send_command(cmd):
+    """Отправка команды через веб-интерфейс"""
+    # Валидация команды
+    valid_commands = {"1", "2", "3", "4", "5"}
+    if cmd not in valid_commands:
+        return jsonify({"status": "error", "message": f"Неверная команда. Доступны: {', '.join(valid_commands)}"}), 400
+
+    return jsonify(send_command_to_yotik(cmd))
+
+
+@app.route('/api/connect', methods=['POST'])
+def reconnect():
+    """Переподключение к серверу"""
+    if panel.connected:
+        return jsonify({"status": "info", "message": "Уже подключено к серверу"})
+
+    success = connect_to_server()
+    return jsonify({
+        "status": "success" if success else "error",
+        "message": "Подключение установлено" if success else "Не удалось подключиться"
+    })
+
+
+# ====== ГЛАВНАЯ ФУНКЦИЯ ======
+def main():
+    print("=" * 60)
+    print("ЙОТИК ПУЛЬТ УПРАВЛЕНИЯ - ВЕБ ИНТЕРФЕЙС")
+    print("=" * 60)
+    print(f"IP сервера йотика: {SERVER_IP}:{SERVER_PORT}")
+    print(f"Веб-интерфейс будет доступен на: http://localhost:{FLASK_PORT}")
+    print("=" * 60)
+
+    # Подключаемся к серверу йотика
+    print("\nПодключение к серверу йотика...")
+    connect_to_server()
+
+    # Запускаем Flask в отдельном потоке
+    print(f"\nЗапуск веб-сервера на http://localhost:{FLASK_PORT}")
+    print("   Откройте эту ссылку в браузере для управления\n")
+
+    flask_thread = threading.Thread(
+        target=lambda: app.run(host=FLASK_HOST, port=FLASK_PORT, debug=False, use_reloader=False),
+        daemon=True
+    )
+    flask_thread.start()
+
+    # Основной цикл для консольного управления (опционально)
+    print("Доступные команды в консоли: 1, 2, 5, 0, exit")
+    print("Для полного управления используйте веб-интерфейс в браузере!\n")
+
+    try:
+        while True:
+            cmd = input("КОНСОЛЬ >>> ").strip().lower()
+            if cmd == "exit":
+                print("Завершение работы...")
+                break
+            if cmd in ("1", "2", "5", "0"):
+                send_command_to_yotik(cmd)
+            else:
+                print("⚠️ Неверная команда. Доступно: 1, 2, 5, 0, exit")
+    except KeyboardInterrupt:
+        print("\n\n👋 Выход по Ctrl+C")
+    finally:
+        if panel.sock:
+            panel.sock.close()
+        print("Пульт управления остановлен.")
+
+
+if __name__ == "__main__":
+    main()
