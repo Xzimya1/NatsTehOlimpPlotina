@@ -1,2 +1,2 @@
 # NatsTehOlimpPlotina
-gigi za shagi
+Plotina command
