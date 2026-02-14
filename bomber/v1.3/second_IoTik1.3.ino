@@ -129,7 +129,7 @@ void loop() {
     } else if(response.indexOf("ventilation_off") != -1) {
       ventilation_activity = 0;
       stopMotor();   // остановка ASINC шаговика
-    } else if(response.indexOf("CLOSE_DOOR") != -1) {
+    } if(response.indexOf("CLOSE_DOOR") != -1) {
       myservo.write(170);
       delay(500);
       door_condition = 1;
@@ -137,7 +137,7 @@ void loop() {
       myservo.write(10);
       delay(500);
       door_condition = 0;
-    } else if(response.indexOf("DESTROY_BOMB_SHELTER") != -1) {
+    } if(response.indexOf("DESTROY_BOMB_SHELTER") != -1) {
       destroy();
     }
   }
@@ -290,3 +290,4 @@ void destroy(){
   Serial.println("БОМБОУБЕЖИЩЕ УНИЧТОЖЕНО");
   client.println("БОМБОУБЕЖИЩЕ УНИЧТОЖЕНО +100 К ПОТУЖНОСТИ");
 }
+
