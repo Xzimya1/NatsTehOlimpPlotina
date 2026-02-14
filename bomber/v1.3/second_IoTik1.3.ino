@@ -92,7 +92,7 @@ void loop() {
   if (HUM >= porog){
     Serial.println("УГРОЗА ЗАТОПЛЕНИЯ"); //заменить на функцию
   }
- 
+  doc["Number"] = 2;
   doc["HUM"] = round(HUM * 10) / 10.0;
   doc["HUM_AIR"] = round(humidity * 10) / 10.0;
   doc["TEM_AIR"] = round(temperature * 10) / 10.0;
@@ -290,4 +290,5 @@ void destroy(){
   Serial.println("БОМБОУБЕЖИЩЕ УНИЧТОЖЕНО");
   client.println("БОМБОУБЕЖИЩЕ УНИЧТОЖЕНО +100 К ПОТУЖНОСТИ");
 }
+
 
