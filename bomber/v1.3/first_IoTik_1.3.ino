@@ -135,9 +135,9 @@ void loop() {
     Serial.println(response);
     if (response.indexOf("1") != -1){
       //ДЕЙСТВИЕ 1
-    } else if(response.indexOf("2") != -1) {
+    } if(response.indexOf("2") != -1) {
       //ДЕЙСТВИЕ 2
-    } else if(response.indexOf("RED") != -1) {
+    } if(response.indexOf("RED") != -1) {
       RED(RedPin, YellowPin, GreenPin);
       alarm_status = 2;
     } else if(response.indexOf("YELLOW") != -1) {
@@ -230,3 +230,4 @@ void GREEN(const int RedPin, const int YellowPin, const int GreenPin){
   digitalWrite(YellowPin, LOW);
   digitalWrite(GreenPin, HIGH);
 }
+
