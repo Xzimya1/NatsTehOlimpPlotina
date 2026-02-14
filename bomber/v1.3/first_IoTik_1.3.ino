@@ -107,7 +107,7 @@ void loop() {
   Serial.println(data);
 
   // Формирование JSON FILE
-
+  doc["Number"] = 1;
   doc["Distant"] = round(val7 * 10) / 10.0;      
   doc["illumination"] = round(val6 * 10) / 10.0; 
   doc["lastCount"] = lastCount;
@@ -230,4 +230,5 @@ void GREEN(const int RedPin, const int YellowPin, const int GreenPin){
   digitalWrite(YellowPin, LOW);
   digitalWrite(GreenPin, HIGH);
 }
+
 
